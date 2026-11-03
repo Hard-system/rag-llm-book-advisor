@@ -30,6 +30,15 @@ profile: multilingual
 # CPU threads used by PyTorch (0 = number of physical cores).
 threads: 0
 
+# OCR for scanned PDFs (pages that are only images). Uses RapidOCR on CPU (~10 s/page, cached in
+# data/ocr so it runs once per book). Only applied when more than half of a PDF's pages have no text.
+ocr: true
+
+# Duplicate detection: a file whose text overlaps an already indexed book by more than this
+# (estimated Jaccard similarity of 5-word shingles, 0..1) is recorded as a duplicate and not
+# embedded again - e.g. the same book saved twice under different names. 1.0 disables it.
+dedupe_threshold: 0.5
+
 embedding:
   # model: BAAI/bge-m3      # uncomment to override the profile with any sentence-transformers model
   # query_prefix: ""        # e.g. "query: " for e5 models (profiles set this automatically)

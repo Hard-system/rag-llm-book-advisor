@@ -132,3 +132,40 @@ def test_profiles(monkeypatch, tmp_path):
     cfg = load_config(cfgfile)
     assert cfg.embedding.model == "custom/model"  # explicit value overrides profile
     assert cfg.embedding.index_id == "custom/model|onnx-int8"
+
+
+# ---------------------------------------------------------------- library hygiene
+def test_title_resolution_from_messy_names():
+    from book_rag.loaders import resolve_title_author
+
+    assert resolve_title_author(Path("Eric Ries - The Lean Startup.pdf")) == ("The Lean Startup", "Eric Ries")
+    t, a = resolve_title_author(Path("Deep Work (Cal Newport) (Z-Library).pdf"))
+    assert (t, a) == ("Deep Work", "Cal Newport")
+    # 'Title - Subtitle 2009' is not 'Author - Title'
+    t, a = resolve_title_author(Path("Trading in the Zone - Master the Market 2000.pdf"), "Master the Market", "vpavan")
+    assert t == "Trading in the Zone - Master the Market 2000" and a is None
+    # generic file names take their title from the folder
+    assert resolve_title_author(Path("lib/Atomic Habits/Summary.docx"))[0] == "Atomic Habits — Summary"
+    assert resolve_title_author(Path("x/inv(3).pdf"), "file:///C:/Documents")[0] == "x — inv(3)"
+
+
+def test_duplicate_sketch():
+    from book_rag.ingest import sketch_similarity, text_sketch
+
+    book = " ".join(f"word{i % 997} token{i % 991}" for i in range(20000))
+    copy = book.replace("word5 ", "WORD5 ", 3)  # tiny differences (other edition / scan)
+    other = " ".join(f"alpha{i % 983} beta{i % 977}" for i in range(20000))
+    a, b, c = text_sketch(book), text_sketch(copy), text_sketch(other)
+    assert sketch_similarity(a, b) > 0.9
+    assert sketch_similarity(a, c) < 0.05
+    assert len(text_sketch("too short")) == 0
+
+
+def test_ragignore_patterns():
+    from book_rag.ingest import is_ignored
+
+    pats = ["Prompt*.txt", "drafts/", "*.pdf.yaml"]
+    assert is_ignored("business/Prompt for Summarizing a Book.txt", pats)
+    assert is_ignored("drafts/notes.md", pats)
+    assert is_ignored("x/book.pdf.yaml", pats)
+    assert not is_ignored("business/Atomic Habits.pdf", pats)

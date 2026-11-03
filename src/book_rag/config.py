@@ -98,6 +98,8 @@ PROFILES: dict[str, dict[str, str]] = {
 class Config:
     profile: str = "multilingual"
     threads: int = 0
+    ocr: bool = True                 # OCR scanned PDFs (needs rapidocr_onnxruntime)
+    dedupe_threshold: float = 0.5    # text similarity above which a file is treated as a duplicate book
     library_dir: Path = PROJECT_ROOT / "library"
     data_dir: Path = PROJECT_ROOT / "data"
     extensions: list[str] = field(

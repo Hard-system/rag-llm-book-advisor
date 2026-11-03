@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -46,6 +47,7 @@ def sync(
     rebuild: bool = typer.Option(False, "--rebuild", help="Delete the index and re-embed everything (needed after changing the embedding model or chunking settings)."),
     file: Optional[list[Path]] = typer.Option(None, "--file", "-f", help="Only (re)index these files (must be inside the library folder)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would change without indexing."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Don't ask for confirmation (for unattended runs)."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Synchronise the vector database with the library folder (add / update / move / remove books)."""
@@ -55,16 +57,28 @@ def sync(
     console.print(f"[bold]Library:[/] {cfg.library_dir}\n[bold]Index:[/]   {cfg.data_dir}\n"
                   f"[bold]Model:[/]   {cfg.embedding.model} · chunking={cfg.chunking.strategy} "
                   f"{cfg.chunking.chunk_size}/{cfg.chunking.chunk_overlap} tokens")
-    if rebuild and not dry_run and not typer.confirm("This deletes the existing index and re-embeds every book. Continue?"):
+    if rebuild and not dry_run and not yes and not typer.confirm("This deletes the existing index and re-embeds every book. Continue?"):
         raise typer.Exit(1)
     for f in file or []:
         if cfg.library_dir.resolve() not in f.resolve().parents:
             console.print(f"[red]{f} is not inside {cfg.library_dir}[/]")
             raise typer.Exit(2)
     idx = Indexer(cfg)
-    rep = idx.sync(rebuild=rebuild, only=file, progress=lambda m: console.print(escape(m)), dry_run=dry_run)
+    log_path = cfg.logs_dir / "sync.log"
+
+    def progress(msg: str) -> None:
+        console.print(escape(msg))
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+
+    rep = idx.sync(rebuild=rebuild, only=file, progress=progress, dry_run=dry_run)
+    progress("SYNC FINISHED: " + rep.summary())
     color = "red" if rep.failed else "green"
     console.print(Panel(rep.summary(), title="dry run" if dry_run else "sync finished", border_style=color))
+    for path, why in rep.duplicates:
+        console.print(f"[yellow]duplicate[/] {escape(path)}: {escape(why)}")
+    for path in rep.empty:
+        console.print(f"[yellow]no text[/] {escape(path)}")
     for path, err in rep.failed:
         console.print(f"[red]failed[/] {escape(path)}: {escape(err)}")
     if rep.failed:
@@ -107,17 +121,23 @@ def search(
 
 
 @app.command("list")
-def list_books(verbose: bool = typer.Option(False, "--verbose", "-v")):
+def list_books(
+    all_: bool = typer.Option(False, "--all", "-a", help="Also show skipped duplicates and empty files."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
     """List indexed books."""
     cfg = _setup(verbose)
     from .store import Store
 
-    docs = Store(cfg).documents()
-    t = Table(title=f"{len(docs)} books in {cfg.library_dir}")
-    for col in ("id", "category", "title", "author", "type", "pages", "chunks", "file"):
+    docs = Store(cfg).documents(status=None if all_ else "indexed")
+    t = Table(title=f"{len(docs)} documents in {cfg.library_dir}")
+    for col in ("id", "status", "category", "title", "author", "pages", "chunks", "file"):
         t.add_column(col, overflow="fold")
     for d in docs:
-        t.add_row(str(d["id"]), d["category"] or "-", d["title"], d["author"] or "-", d["file_type"],
+        status = d.get("status") or "indexed"
+        if status == "duplicate":
+            status = f"duplicate of #{d.get('duplicate_of')}"
+        t.add_row(str(d["id"]), status, d["category"] or "-", d["title"], d["author"] or "-",
                   str(d["n_pages"] or "-"), str(d["n_chunks"]), d["path"])
     console.print(t)
 

@@ -67,28 +67,114 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-def _title_author_from_filename(path: Path) -> tuple[str, str | None]:
-    """'Author Name - Book Title.pdf' -> ('Book Title', 'Author Name')."""
-    stem = path.stem.replace("_", " ").strip()
-    if " - " in stem:
-        left, right = stem.split(" - ", 1)
-        if 2 <= len(left) <= 60:
-            return right.strip(), left.strip()
-    return stem, None
+# ---------------------------------------------------------------------------
+# Title / author resolution
+# ---------------------------------------------------------------------------
 
-
-_JUNK_TITLE = re.compile(
-    r"(^untitled|^microsoft (word|powerpoint)|^document\d*$|^presentation\d*$|\.(docx?|pptx?|pdf|indd|qxd)$|"
-    r"\b(edited|draft|copy|final|v\d+)\s*$|^\W*$)",
+# Download-site noise in file names and metadata.
+_NAME_NOISE = [
+    re.compile(r"\(\s*(z-library|z-lib\.org|pdfdrive|pdfdrive\.com|ebook|epub|libgen)\s*\)", re.I),
+    re.compile(r"^pdfcoffee\.com[_-]", re.I),
+    re.compile(r"[-_ ](pdf[-_ ]room[-_ ])?pdf[-_ ]free$", re.I),
+    re.compile(r"\s*-\s*pdfdrive\.com\s*$", re.I),
+    re.compile(r"\s*\(\d\)$"),              # "book (1).pdf" copy marker
+    re.compile(r"[_ ]\d{6}[_ ]\d{6}$"),      # "_241229_105032" timestamps
+    re.compile(r"\s*-\s*annotated$", re.I),
+]
+# File names that say nothing about the content -> title comes from the folder.
+GENERIC_STEM = re.compile(
+    r"^(summary|sumarry|summery|резюме|обобщение|notes?|бележки|new (microsoft )?(word|text) document( \(\d+\))?|"
+    r"document\d*|untitled.*|inv\(\d+\)|book\d*|\d+)$",
     re.IGNORECASE,
 )
+_JUNK_TITLE = re.compile(
+    r"(^untitled|^microsoft (word|powerpoint)|^document\d*$|^presentation\d*$|\.(docx?|pptx?|pdf|indd|qxd)$|"
+    r"\b(edited|draft|copy|final|v\d+)\s*$|^\W*$|^file:|^inv\(\d+\)$|^cover$|^title$|^contents$|^[\w.-]{1,3}$)",
+    re.IGNORECASE,
+)
+_NAME_CONNECTORS = {"de", "van", "von", "der", "da", "di", "la", "le", "bin", "al", "&", "and"}
+_NOT_A_NAME_START = {"the", "a", "an", "how", "why", "what", "when", "where", "who", "my", "your", "our"}
+
+
+def _strip_noise(s: str) -> str:
+    s = s.replace("\\'", "'").strip()
+    for rx in _NAME_NOISE:
+        s = rx.sub("", s).strip()
+    return re.sub(r"\s{2,}", " ", s).strip(" -_.")
+
+
+def _looks_like_person(s: str) -> bool:
+    """'Eric Ries', 'Seth A. Klarman', 'Max Finger, Oliver Samwer' -> True; 'Trading in the Zone' -> False."""
+    s = re.sub(r"\(auth\.?\)|\(eds?\.?\)", "", s, flags=re.I).strip(" ,")
+    if not s or len(s) > 60 or re.search(r"\d", s):
+        return False
+    words = re.findall(r"[\w.'’-]+", s)
+    if not 1 < len(words) <= 7 or words[0].lower() in _NOT_A_NAME_START:
+        return False
+    return all(w[0].isupper() or w.lower() in _NAME_CONNECTORS for w in words)
+
+
+def _clean_person(s: str | None) -> str | None:
+    if not s:
+        return None
+    s = re.sub(r"\(auth\.?\)|\(eds?\.?\)", "", s, flags=re.I).strip(" ,;")
+    s = re.sub(r"\s{2,}", " ", s)
+    # uploader names / tools, not authors: 'vpavan', 'Julie', 'Administrator', 'Adobe ...'
+    if (len(s) < 4 or " " not in s.replace(",", " ").strip()
+            or re.search(r"admin|user|adobe|microsoft|calibre|pdf|www\.|@", s, re.I)):
+        return None
+    return s
+
+
+def _parse_filename(path: Path) -> tuple[str, str | None]:
+    """Best-effort (title, author) from a file name.
+
+    Handles 'Author - Title', 'Title (Author) (Z-Library)', 'Title - Subtitle 2009', slugs."""
+    raw = path.stem
+    had_zlib = bool(re.search(r"\((z-library|z-lib\.org)\)", raw, re.I))
+    stem = _strip_noise(_strip_noise(raw).replace("_", " "))
+    if " " not in stem and stem.count("-") >= 2:  # url slug
+        stem = stem.replace("-", " ").strip().capitalize()
+    author = None
+    # 'Title (Author Name) (Z-Library)' -> trailing parenthesis is the author
+    m = re.match(r"^(.*\S)\s*\(([^()]+)\)$", stem)
+    if m and (had_zlib or _looks_like_person(m.group(2))):
+        cand = m.group(2).split("[")[0].strip(" ,")
+        if _looks_like_person(cand) or had_zlib:
+            stem, author = m.group(1).strip(), cand
+    # '[Author] Title'
+    m = re.match(r"^\[([^\]]+)\]\s*(.+)$", stem)
+    if m and not author:
+        author, stem = m.group(1).strip(), m.group(2).strip()
+    # 'Author - Title' (but not 'Title - Subtitle 2009')
+    if " - " in stem and not author:
+        left, right = stem.split(" - ", 1)
+        if _looks_like_person(left) and not re.search(r"\b(19|20)\d\d\b|edition", right, re.I):
+            stem, author = right.strip(), _clean_person(left) or left.strip()
+    return stem or path.stem, author
 
 
 def _good_meta_title(title: str | None) -> str | None:
-    title = (title or "").strip()
+    title = _strip_noise(title or "")
     if len(title) < 3 or _JUNK_TITLE.search(title):
         return None
     return title
+
+
+def resolve_title_author(path: Path, meta_title: str | None = None,
+                         meta_author: str | None = None) -> tuple[str, str | None]:
+    """Combine embedded metadata and the file name into the best (title, author)."""
+    fn_title, fn_author = _parse_filename(path)
+    mt = _good_meta_title(meta_title)
+    if GENERIC_STEM.match(path.stem.strip()):
+        # 'Summary.docx' -> 'Deep work rules for focused success — Summary'
+        title = mt or f"{_strip_noise(path.parent.name)} — {path.stem.strip()}"
+    elif mt and mt.lower() in fn_title.lower() and len(fn_title) > len(mt) + 5:
+        title = fn_title  # file name has the full title, metadata only the subtitle
+    else:
+        title = mt or fn_title
+    author = _clean_person(meta_author) or fn_author
+    return title.strip(), author
 
 
 def _read_text_file(path: Path) -> str:
@@ -130,18 +216,81 @@ def _split_plain_text_by_chapters(text: str) -> list[Section]:
 # ---------------------------------------------------------------------------
 
 
-def load_pdf(path: Path) -> LoadedDocument:
+def _detect_pdf_headings(doc) -> dict[int, str]:
+    """Chapter detection for PDFs without an outline: lines set in a clearly larger font than the
+    body text, near the top of a page, are treated as chapter headings. Returns {page: heading}."""
+    from collections import Counter
+
+    sizes: Counter = Counter()
+    candidates: dict[int, list[tuple[float, str]]] = {}
+    for pno, page in enumerate(doc, start=1):
+        height = page.rect.height or 1
+        try:
+            d = page.get_text("dict")
+        except Exception:
+            continue
+        for block in d.get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                spans = [s for s in line.get("spans", []) if s.get("text", "").strip()]
+                if not spans:
+                    continue
+                text = " ".join(s["text"].strip() for s in spans)
+                # font size that most characters of the line use (ignores decorative drop-caps)
+                per_size: Counter = Counter()
+                for s in spans:
+                    per_size[round(s["size"] * 2) / 2] += len(s["text"].strip())
+                size = per_size.most_common(1)[0][0]
+                sizes[size] += len(text)
+                if line["bbox"][1] < height * 0.45 and _plausible_heading(text):
+                    candidates.setdefault(pno, []).append((size, text))
+    if not sizes:
+        return {}
+    body = sizes.most_common(1)[0][0]
+    for factor in (1.3, 1.6):
+        found: dict[int, str] = {}
+        for pno, cands in candidates.items():
+            big = [t for s, t in cands if s >= body * factor]
+            if big:
+                found[pno] = re.sub(r"\s+", " ", " ".join(big[:3]))[:120]
+        # plausible structure: at least 3 headings, not more than one every ~7 pages
+        if 3 <= len(found) <= max(3, doc.page_count * 0.15):
+            return found
+    return {}  # too few (only a cover title) or too noisy (slides, charts) -> no chapter info
+
+
+def _plausible_heading(text: str) -> bool:
+    t = text.strip()
+    if not 3 <= len(t) <= 100 or len(t.split()) > 14:
+        return False
+    if re.search(r"www\.|http|\bfig(ure)?\b|©|\.com\b", t, re.I):
+        return False
+    letters = sum(c.isalpha() for c in t)
+    if letters < 4 or letters / len(t.replace(" ", "")) < 0.75 or not t.isprintable():
+        return False
+    words = re.findall(r"[^\W\d_]+", t)
+    return bool(words) and max(len(w) for w in words) >= 4 and sum(len(w) for w in words) / len(words) >= 3
+
+
+def load_pdf(path: Path, ocr_cache_dir: Path | None = None) -> LoadedDocument:
     import pymupdf
 
     doc = pymupdf.open(path)
     meta = doc.metadata or {}
-    title, author = _title_author_from_filename(path)
-    title = _good_meta_title(meta.get("title")) or title
-    author = (meta.get("author") or "").strip() or author
+    title, author = resolve_title_author(path, meta.get("title"), meta.get("author"))
 
     # Map every page to the deepest TOC entry (level <= 2) that starts on/before it.
     toc = [(lvl, t.strip(), p) for lvl, t, p in doc.get_toc(simple=True) if lvl <= 2 and t.strip()]
     page_chapter: dict[int, str] = {}
+    if not toc:
+        # no outline: detect headings by font size and carry them forward page by page
+        current = None
+        headings = _detect_pdf_headings(doc)
+        for pno in range(1, doc.page_count + 1):
+            current = headings.get(pno, current)
+            if current:
+                page_chapter[pno] = current
     if toc:
         toc.sort(key=lambda x: x[2])
         stack: dict[int, str] = {}
@@ -156,8 +305,8 @@ def load_pdf(path: Path) -> LoadedDocument:
             if stack:
                 page_chapter[pno] = " > ".join(stack[k] for k in sorted(stack))
 
-    sections: list[Section] = []
-    empty_pages = 0
+    page_texts: dict[int, str] = {}
+    empty: list[int] = []
     for i, page in enumerate(doc, start=1):
         blocks = page.get_text("blocks", sort=True)
         paras = []
@@ -172,18 +321,29 @@ def load_pdf(path: Path) -> LoadedDocument:
             paras.append(re.sub(r"\s*\n\s*", " ", txt))
         page_text = clean_text("\n\n".join(paras))
         if len(page_text) < 20:
-            empty_pages += 1
-            continue
-        sections.append(Section(page_text, page_chapter.get(i), i))
-
-    warnings = []
-    if doc.page_count and empty_pages / doc.page_count > 0.5:
-        warnings.append(
-            f"{empty_pages}/{doc.page_count} pages have no extractable text - this PDF is probably "
-            "scanned. Run OCR first (e.g. `ocrmypdf in.pdf out.pdf`) and re-sync."
-        )
+            empty.append(i)
+        else:
+            page_texts[i] = page_text
     n_pages = doc.page_count
     doc.close()
+
+    warnings = []
+    scanned = n_pages and len(empty) / n_pages > 0.5
+    if scanned:
+        from . import ocr
+
+        if ocr_cache_dir is not None and ocr.available():
+            for pno, txt in ocr.ocr_pdf_pages(path, empty, ocr_cache_dir).items():
+                txt = clean_text(txt)
+                if len(txt) >= 20:
+                    page_texts[pno] = txt
+            warnings.append(f"scanned PDF - text recognised with OCR on {len(empty)} pages")
+        else:
+            warnings.append(
+                f"{len(empty)}/{n_pages} pages have no extractable text - this PDF is probably scanned. "
+                "Enable OCR (pip install rapidocr_onnxruntime, ocr: true) or run `ocrmypdf` and re-sync."
+            )
+    sections = [Section(page_texts[p], page_chapter.get(p), p) for p in sorted(page_texts)]
     return LoadedDocument(path, title, author, "pdf", sections, n_pages=n_pages, warnings=warnings)
 
 
@@ -221,12 +381,11 @@ def load_epub(path: Path) -> LoadedDocument:
     from ebooklib import epub
 
     book = epub.read_epub(str(path), options={"ignore_ncx": False})
-    title, author = _title_author_from_filename(path)
     md_title = book.get_metadata("DC", "title")
     md_author = book.get_metadata("DC", "creator")
     md_lang = book.get_metadata("DC", "language")
-    title = md_title[0][0].strip() if md_title else title
-    author = md_author[0][0].strip() if md_author else author
+    title, author = resolve_title_author(path, md_title[0][0] if md_title else None,
+                                         md_author[0][0] if md_author else None)
     language = md_lang[0][0] if md_lang else None
 
     # Map document file names to TOC titles.
@@ -258,10 +417,8 @@ def load_docx(path: Path) -> LoadedDocument:
     import docx
 
     d = docx.Document(str(path))
-    title, author = _title_author_from_filename(path)
     cp = d.core_properties
-    title = _good_meta_title(cp.title) or title
-    author = (cp.author or "").strip() or author
+    title, author = resolve_title_author(path, cp.title, cp.author)
     sections: list[Section] = []
     heading, buf = None, []
     for p in d.paragraphs:
@@ -287,7 +444,7 @@ def load_docx(path: Path) -> LoadedDocument:
 
 def load_markdown(path: Path) -> LoadedDocument:
     text = _read_text_file(path)
-    title, author = _title_author_from_filename(path)
+    title, author = resolve_title_author(path)
     sections: list[Section] = []
     heading, buf = None, []
     in_code = False
@@ -308,7 +465,7 @@ def load_markdown(path: Path) -> LoadedDocument:
 
 def load_txt(path: Path) -> LoadedDocument:
     text = clean_text(_read_text_file(path))
-    title, author = _title_author_from_filename(path)
+    title, author = resolve_title_author(path)
     sections = _split_plain_text_by_chapters(text)
     if len(sections) <= 1:
         sections = [Section(text, None)]
@@ -319,16 +476,14 @@ def load_html(path: Path) -> LoadedDocument:
     from bs4 import BeautifulSoup
 
     raw = _read_text_file(path)
-    title, author = _title_author_from_filename(path)
     soup = BeautifulSoup(raw, "lxml")
-    if soup.title and soup.title.string:
-        title = soup.title.string.strip() or title
+    title, author = resolve_title_author(path, soup.title.string if soup.title and soup.title.string else None)
     return LoadedDocument(path, title, author, "html", _html_to_sections(raw))
 
 
 def load_ipynb(path: Path) -> LoadedDocument:
     nb = json.loads(_read_text_file(path))
-    title, author = _title_author_from_filename(path)
+    title, author = resolve_title_author(path)
     sections: list[Section] = []
     heading, buf = None, []
     for cell in nb.get("cells", []):
@@ -368,11 +523,12 @@ def sidecar_path(path: Path) -> Path:
     return path.with_name(path.name + ".yaml")
 
 
-def load_document(path: Path) -> LoadedDocument:
+def load_document(path: Path, ocr_cache_dir: Path | None = None) -> LoadedDocument:
+    """Load any supported file. ``ocr_cache_dir`` enables OCR for scanned PDFs."""
     loader = LOADERS.get(path.suffix.lower())
     if loader is None:
         raise ValueError(f"Unsupported file type: {path.suffix}")
-    doc = loader(path)
+    doc = loader(path, ocr_cache_dir) if loader is load_pdf else loader(path)
 
     side = sidecar_path(path)
     if side.exists():

@@ -179,9 +179,17 @@ library/
   language: bg
   tags: [finance, personal-development]
   ```
-* **Scanned PDFs** (images of pages) have no text. `rag sync` warns you about them. Run OCR first
-  (`pip install ocrmypdf` → `ocrmypdf --language bul+eng in.pdf out.pdf`) and put the OCR'd file
-  in the library.
+* **Scanned PDFs** (images of pages) are **OCR'd automatically** with RapidOCR (`ocr: true` in
+  `config.yaml`). This takes about 10 s per page on CPU, once: results are cached in `data/ocr/`.
+* **Excluding files**: list glob patterns in **`library/.ragignore`** (one per line, e.g. prompt
+  templates or drafts). Folders starting with `_` or `.` are always ignored.
+* **Duplicates are handled for you.** The same book saved twice (other file name, other folder,
+  another copy) is detected by text similarity and **not embedded twice**. `rag list --all` shows
+  which file was skipped as a duplicate of which book. Well-named files win over `inv(3).pdf` or `book (1).pdf`.
+* **Generic file names** such as `Summary.docx`, `резюме.docx` or `New Microsoft Word Document.docx`
+  get their title from their folder, e.g. *"Deep work rules for focused success — Summary"*.
+* **PDFs without a table of contents**: chapter headings are detected from the font size, so
+  chunks still stay inside chapters and citations show the chapter.
 * DRM-protected e-books cannot be read. Use DRM-free copies.
 * Use a different folder: set `library_dir:` in `config.yaml` or the `RAG_LIBRARY_DIR` environment variable.
 
@@ -199,6 +207,9 @@ rag sync
 | replaced a book with a new version | removes the old chunks, indexes the new file |
 | moved or renamed a book (or its folder) | detects it by SHA-256 and only updates path and category (nothing re-embedded) |
 | deleted a book | removes it from the index |
+| saved the same book twice | indexes it once; the copy is recorded as a duplicate |
+| added an empty or image-only file | OCRs it (scanned PDF) or records it as empty |
+| edited a `<book>.yaml` sidecar | re-indexes that book with the new title/author |
 | nothing | finishes in about a second |
 
 Useful variants:
@@ -208,13 +219,16 @@ rag sync --dry-run                          # show what would change
 rag sync -f "library\psychology\new.pdf"    # index just one file
 rag sync --rebuild                          # wipe and re-index everything (needed after changing
                                             # the embedding model, profile, backend or chunking settings)
-rag list                                    # what is indexed
+rag list                                    # what is indexed (--all: also duplicates/empty)
+rag sync -y                                 # no confirmation prompts (unattended runs)
 rag stats                                   # counts, models, disk size
 ```
 
 **How long does it take?** On a 4-core laptop CPU, about **1 s per chunk**. A 300-page book is
 roughly 400–600 chunks, so 7–10 minutes, **once**. Re-syncs skip unchanged books. Let a large first
-import run in a terminal (e.g. overnight). You can keep searching in Claude while a sync runs.
+import run in a terminal (e.g. overnight). You can keep searching in Claude while a sync runs, and you can **stop it any time** (Ctrl+C): every
+finished book is saved and `rag sync` continues where it stopped. Progress with an ETA is written
+to `data/logs/sync.log`.
 
 You can also ask Claude to sync ("sync my library"), which calls the `sync_library` tool. For big
 imports the terminal is better because you see progress.

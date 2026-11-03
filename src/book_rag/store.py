@@ -116,6 +116,10 @@ class Store:
 
     def _init_sqlite(self) -> None:
         self.db.executescript(_SCHEMA)
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(documents)")}
+        for col, ddl in (("status", "TEXT DEFAULT 'indexed'"), ("duplicate_of", "INTEGER"), ("fingerprint", "BLOB")):
+            if col not in cols:  # migrate indexes created by older versions
+                self.db.execute(f"ALTER TABLE documents ADD COLUMN {col} {ddl}")
         self.set_meta("schema_version", SCHEMA_VERSION)
         self.db.commit()
 
@@ -172,10 +176,12 @@ class Store:
             cur.execute("BEGIN")
             cur.execute(
                 """INSERT INTO documents(path, sha256, title, author, category, tags, language, file_type,
-                                         n_pages, n_chunks, n_chars, size_bytes, mtime, warnings)
+                                         n_pages, n_chunks, n_chars, size_bytes, mtime, warnings,
+                                         status, duplicate_of, fingerprint)
                    VALUES (:path, :sha256, :title, :author, :category, :tags, :language, :file_type,
-                           :n_pages, :n_chunks, :n_chars, :size_bytes, :mtime, :warnings)""",
-                doc,
+                           :n_pages, :n_chunks, :n_chars, :size_bytes, :mtime, :warnings,
+                           :status, :duplicate_of, :fingerprint)""",
+                {"status": "indexed", "duplicate_of": None, "fingerprint": None, **doc},
             )
             doc_id = cur.lastrowid
             ids = []
@@ -194,7 +200,7 @@ class Store:
                     "INSERT INTO chunks_fts(rowid, body, title, chapter) VALUES (?,?,?,?)",
                     (cid, ch["text"], doc["title"] + author, ch["chapter"] or ""),
                 )
-            if len(ids):
+            if len(ids) and vectors is not None:
                 table = self._vector_table(dim=vectors.shape[1], create=True)
                 table.add(
                     pa.table(
@@ -244,9 +250,29 @@ class Store:
         db.commit()
 
     # ---------------------------------------------------------------- reads
-    def documents(self) -> list[dict[str, Any]]:
-        rows = self.db.execute("SELECT * FROM documents ORDER BY category, title").fetchall()
+    def documents(self, status: str | None = "indexed") -> list[dict[str, Any]]:
+        """Documents with the given status ('indexed', 'duplicate', 'empty'); status=None = all records."""
+        cols = "id, path, sha256, title, author, category, tags, language, file_type, n_pages, n_chunks, "                "n_chars, size_bytes, mtime, warnings, indexed_at, status, duplicate_of"
+        if status is None:
+            rows = self.db.execute(f"SELECT {cols} FROM documents ORDER BY category, title").fetchall()
+        else:
+            rows = self.db.execute(f"SELECT {cols} FROM documents WHERE COALESCE(status,'indexed')=? "
+                                   "ORDER BY category, title", (status,)).fetchall()
         return [dict(r) for r in rows]
+
+    def document_sketches(self) -> list[tuple[int, str, np.ndarray]]:
+        rows = self.db.execute("SELECT id, title, fingerprint FROM documents "
+                               "WHERE COALESCE(status,'indexed')='indexed' AND fingerprint IS NOT NULL")
+        return [(r[0], r[1], np.frombuffer(r[2], dtype=np.uint64)) for r in rows]
+
+    def orphan_duplicates(self) -> list[str]:
+        """Delete duplicate records whose original is gone; returns their paths (to be re-processed)."""
+        rows = self.db.execute("SELECT id, path FROM documents WHERE status='duplicate' AND "
+                               "(duplicate_of IS NULL OR duplicate_of NOT IN (SELECT id FROM documents))").fetchall()
+        for r in rows:
+            self.db.execute("DELETE FROM documents WHERE id=?", (r[0],))
+        self.db.commit()
+        return [r[1] for r in rows]
 
     def document_by_path(self, path: str) -> dict[str, Any] | None:
         r = self.db.execute("SELECT * FROM documents WHERE path=?", (path,)).fetchone()
@@ -333,11 +359,14 @@ class Store:
     # ---------------------------------------------------------------- maintenance
     def stats(self) -> dict[str, Any]:
         db = self.db
-        n_docs = db.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+        n_docs = db.execute("SELECT COUNT(*) FROM documents WHERE COALESCE(status,'indexed')='indexed'").fetchone()[0]
+        by_status = {r[0]: r[1] for r in db.execute(
+            "SELECT COALESCE(status,'indexed'), COUNT(*) FROM documents GROUP BY 1")}
         n_chunks = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         n_tokens = db.execute("SELECT COALESCE(SUM(n_tokens),0) FROM chunks").fetchone()[0]
         cats = db.execute(
-            "SELECT COALESCE(category,'(root)') c, COUNT(*) n FROM documents GROUP BY c ORDER BY n DESC"
+            "SELECT COALESCE(category,'(root)') c, COUNT(*) n FROM documents "
+            "WHERE COALESCE(status,'indexed')='indexed' GROUP BY c ORDER BY n DESC"
         ).fetchall()
         table = self._vector_table()
         n_vectors = table.count_rows() if table is not None else 0
@@ -355,6 +384,8 @@ class Store:
 
         return {
             "documents": n_docs,
+            "skipped_duplicates": by_status.get("duplicate", 0),
+            "skipped_empty": by_status.get("empty", 0),
             "chunks": n_chunks,
             "tokens": n_tokens,
             "vectors": n_vectors,
