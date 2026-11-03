@@ -73,7 +73,7 @@ def clean_text(text: str) -> str:
 
 # Download-site noise in file names and metadata.
 _NAME_NOISE = [
-    re.compile(r"\((?=[^()]*(z-library|z-lib|1lib|pdfdrive|libgen|ebook|epub))[^()]*\)", re.I),
+    re.compile(r"\((?=[^()]*\b(z-library|z-lib|1lib|pdfdrive|libgen|ebook|epub)\b)[^()]*\)", re.I),
     re.compile(r"^pdfcoffee\.com[_-]", re.I),
     re.compile(r"[-_ ](pdf[-_ ]room[-_ ])?pdf[-_ ]free$", re.I),
     re.compile(r"\s*-\s*pdfdrive\.com\s*$", re.I),
@@ -131,7 +131,7 @@ def _parse_filename(path: Path) -> tuple[str, str | None]:
 
     Handles 'Author - Title', 'Title (Author) (Z-Library)', 'Title - Subtitle 2009', slugs."""
     raw = path.stem
-    had_zlib = bool(re.search(r"\([^()]*(z-library|z-lib|1lib)[^()]*\)", raw, re.I))
+    had_zlib = bool(re.search(r"\([^()]*\b(z-library|z-lib|1lib)\b[^()]*\)", raw, re.I))
     stem = _strip_noise(_strip_noise(raw).replace("_", " "))
     if " " not in stem and stem.count("-") >= 2:  # url slug
         stem = stem.replace("-", " ").strip().capitalize()
