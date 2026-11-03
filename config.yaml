@@ -1,0 +1,78 @@
+# ---------------------------------------------------------------------------
+# book-rag configuration
+# Every value can also be overridden with an environment variable, e.g.
+#   RAG_LIBRARY_DIR=D:\Books      RAG_DATA_DIR=D:\rag-data
+# Relative paths are resolved against the folder that contains this file.
+# ---------------------------------------------------------------------------
+
+# Where you drop your books. Sub-folders become "categories"
+# (e.g. library/psychology/..., library/finance/...).
+library_dir: library
+
+# Where the index (SQLite + LanceDB), model cache and query logs live.
+data_dir: data
+
+# File types that are picked up by `rag sync`.
+extensions: [".pdf", ".epub", ".docx", ".txt", ".md", ".markdown", ".html", ".htm", ".ipynb"]
+
+# Model profile - picks the embedding + reranker pair (explicit values below win).
+# Speeds measured on a 4-core i7-1165G7 laptop, no GPU, int8 ONNX:
+#   multilingual  BAAI/bge-m3 + cross-encoder/mmarco-mMiniLMv2-L12-H384-v1   (DEFAULT, Bulgarian + English)
+#                 ~0.8 s per chunk to index, ~3-5 s per query incl. reranking
+#   quality       BAAI/bge-m3 + BAAI/bge-reranker-v2-m3   best precision, ~10-15 s per query on CPU
+#                 (great choice if you have an NVIDIA GPU)
+#   english       BAAI/bge-base-en-v1.5 + BAAI/bge-reranker-base   the models used in the course,
+#                 ~3x faster indexing, English books only
+#   light         intfloat/multilingual-e5-small + mMiniLMv2   fastest multilingual, lower quality
+# Changing the embedding model/backend requires `rag sync --rebuild`.
+profile: multilingual
+
+# CPU threads used by PyTorch (0 = number of physical cores).
+threads: 0
+
+embedding:
+  # model: BAAI/bge-m3      # uncomment to override the profile with any sentence-transformers model
+  # query_prefix: ""        # e.g. "query: " for e5 models (profiles set this automatically)
+  # document_prefix: ""
+  batch_size: 16
+  max_seq_length: 512       # chunks are ~400 tokens, so 512 is enough and much faster than 8192
+  device: auto              # auto | cpu | cuda | mps
+  # onnx-int8: export once to ONNX + 8-bit weights -> ~4x faster on CPU, cosine 0.98 to full precision
+  #            (the quantization technique from course module 5). torch: full precision (use with a GPU).
+  backend: onnx-int8
+
+reranker:
+  enabled: true
+  # model: BAAI/bge-reranker-v2-m3   # uncomment to override the profile
+  max_length: 512
+  candidates: 15            # fused candidates re-scored by the cross-encoder (~0.2 s each on CPU)
+  backend: onnx-int8
+
+chunking:
+  strategy: recursive       # recursive | semantic | fixed
+  chunk_size: 400           # target size in TOKENS of the embedding model
+  chunk_overlap: 80         # overlap in tokens (20% - overlap_fraction 0.2 as in the M3 chunking lab)
+  min_chunk_size: 40        # tiny trailing chunks are merged into the previous one
+  semantic_breakpoint_percentile: 90   # only for strategy: semantic
+  context_header: true      # prepend "Book — Author / Chapter" to each chunk before indexing
+
+retrieval:
+  top_k: 6                  # passages returned to Claude
+  keyword_candidates: 50    # BM25 hits per query
+  vector_candidates: 50     # dense hits per query
+  rrf_k: 60                 # Reciprocal Rank Fusion constant
+  # Relative weights in the fusion (like Weaviate's `alpha`). Equal weights work best for a mixed
+  # BG/EN library because BM25 cannot match across languages. For an English-only library the course
+  # setting (alpha=0.3 -> 70% keyword / 30% vector) is: keyword_weight: 0.7, vector_weight: 0.3
+  keyword_weight: 1.0
+  vector_weight: 1.0
+  neighbor_window: 1        # small-to-big: also return N chunks before/after each hit
+  # Context pruning: after reranking, drop passages whose cross-encoder relevance is below this
+  # (0..1). Keeps irrelevant text out of Claude's context. The best 2 are always kept and flagged.
+  min_relevance: 0.05
+  # Final order = rank fusion of the reranker order and the hybrid-retrieval order.
+  # 1.0 = trust the reranker only, 0.0 = ignore it for ordering. 0.5 measured best with the small
+  # multilingual reranker (it can misjudge Bulgarian questions vs English text); with
+  # profile: quality you can raise it to 0.7-1.0.
+  rerank_blend: 0.5
+  ann_index_threshold: 100000   # build an ANN (HNSW) index once the library has this many chunks

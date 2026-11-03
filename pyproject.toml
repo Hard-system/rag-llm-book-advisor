@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "book-rag"
+version = "1.0.0"
+description = "Local, advanced hybrid-search RAG over your personal book library, usable from Claude Code via MCP and the /use-rag skill."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "sentence-transformers[onnx]>=4.1",
+    "optimum[onnxruntime]>=1.23",
+    "torch>=2.2",
+    "truststore>=0.9",
+    "lancedb>=0.13",
+    "pyarrow>=14",
+    "numpy>=1.26",
+    "pymupdf>=1.24",
+    "ebooklib>=0.18",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "python-docx>=1.1",
+    "typer>=0.12",
+    "rich>=13.7",
+    "pyyaml>=6.0",
+    "mcp>=1.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+rag = "book_rag.cli:app"
+book-rag-mcp = "book_rag.mcp_server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

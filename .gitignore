@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+build/
+dist/
+
+# Your books, the index and downloaded models are personal / large - never commit them
+library/**
+!library/README.md
+!library/.gitkeep
+data/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/settings.local.json

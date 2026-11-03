@@ -1,0 +1,13 @@
+# One JSON object per line. Lines starting with # are ignored.
+# Fields: question (required) + any of: book (title substring), page (int), contains (string or list of strings)
+# These examples match the RAG course PDFs (library/rag-course). Replace them with questions about YOUR books.
+{"question": "What is reciprocal rank fusion and how does it combine rankings?", "book": "RAG M2", "contains": ["Reciprocal rank", "RRF"]}
+{"question": "Why do BM25 scores saturate with term frequency?", "book": "RAG M2", "contains": ["Saturation", "saturation"]}
+{"question": "How does HNSW speed up nearest neighbour search?", "book": "RAG M3", "contains": ["Hierarchical", "HNSW"]}
+{"question": "What is the benefit of overlapping chunks?", "book": "RAG M3", "contains": ["overlap"]}
+{"question": "Какво е HyDE и как помага при търсенето?", "book": "RAG M3", "contains": ["HyDE", "Hypothetical"]}
+{"question": "Как кръстосаният енкодер (cross-encoder) подрежда документите?", "book": "RAG M3", "contains": ["Cross-Encoder", "Cross-encoder", "cross-encoder"]}
+{"question": "How does temperature change the token probability distribution?", "book": "RAG M4", "contains": ["Temperature", "temperature"]}
+{"question": "What does the faithfulness metric measure?", "book": "RAG M4", "contains": ["Faithfulness", "faithfulness"]}
+{"question": "Как квантизацията намалява размера на векторите?", "book": "RAG M5", "contains": ["Quantiz", "quantiz"]}
+{"question": "Which metrics should be tracked to monitor a RAG system in production?", "book": "RAG M5", "contains": ["Latency", "latency"]}
